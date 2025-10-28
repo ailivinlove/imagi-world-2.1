@@ -298,7 +298,24 @@ input[type=number] {
         <button id="startBtn" class="btn btn-primary" onclick="app.start()">START</button>
         <button id="stopBtn" class="btn btn-danger" onclick="app.stop()" disabled>STOP</button>
       </div>
-      
+
+      <div class="control-group" id="voiceControls">
+        <h3>VOICE</h3>
+        <div class="btn-group" style="grid-template-columns:1fr 1fr">
+          <button id="previewBtn" class="btn btn-secondary" type="button">Voice Preview</button>
+          <button id="repeatBtn" class="btn btn-secondary" type="button" disabled>Repeat Audio</button>
+        </div>
+        <label>
+          Speech speed
+          <span class="value" id="speechRateVal">1.00×</span>
+        </label>
+        <div class="seed-control">
+          <input type="range" id="speechRate" min="0.5" max="2.5" step="0.1" value="1.0" class="knob-slider" />
+          <input type="number" id="speechRateNum" min="0.5" max="2.5" step="0.1" value="1.0" class="seed-input" style="max-width:90px" />
+        </div>
+        <div class="voice-info" id="voiceInfo">Initializing voice…</div>
+      </div>
+
       <button class="btn btn-secondary" onclick="app.exportData()">Export Session</button>
     </div>
 
@@ -391,6 +408,125 @@ input[type=number] {
     </div>
   </main>
 </div>
+
+<script>
+(function(){
+  const hasTTS = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
+  const RATE_KEY = 'speechRate';
+  let rate = loadRate();
+  let lastLines = [];
+  let sessionToken = 0;
+
+  // UI elements
+  let rateSlider, rateNum, rateVal, previewBtn, repeatBtn, infoEl;
+
+  function clamp(x,min,max){ return Math.max(min, Math.min(max, x)); }
+  function fmt(x){ return (Math.round(x*100)/100).toFixed(2) + '×'; }
+  function saveRate(x){ try{ localStorage.setItem(RATE_KEY, String(x)); }catch(_){} }
+  function loadRate(){ try{ return clamp(parseFloat(localStorage.getItem(RATE_KEY) || '1.0'), 0.5, 2.5); }catch(_){ return 1.0; } }
+
+  function setRate(x){
+    rate = clamp(parseFloat(x||1.0), 0.5, 2.5);
+    if(rateSlider) rateSlider.value = rate;
+    if(rateNum)    rateNum.value = rate;
+    if(rateVal)    rateVal.textContent = fmt(rate);
+    saveRate(rate);
+    updateInfo();
+  }
+
+  function updateInfo(){
+    if(!infoEl) return;
+    if(!hasTTS){ infoEl.textContent = 'Voice unavailable'; return; }
+    try{
+      const voices = speechSynthesis.getVoices() || [];
+      const v = voices.find(v=>/en-|en_/.test(v.lang)) || voices[0];
+      infoEl.innerHTML = v ? `Voice: <strong>${v.name}</strong> (${v.lang}) • Rate ${fmt(rate)}` : `Voice: default • Rate ${fmt(rate)}`;
+    }catch(_){
+      infoEl.textContent = `Voice: default • Rate ${fmt(rate)}`;
+    }
+  }
+
+  function cancelAll(){ if(hasTTS){ try{ speechSynthesis.cancel(); }catch(_){}} }
+
+  function speakLines(lines){
+    if(!hasTTS) return;
+    cancelAll();
+    lastLines = Array.isArray(lines) ? lines.slice() : [String(lines)];
+    const myToken = ++sessionToken;
+    for(const line of lastLines){
+      const u = new SpeechSynthesisUtterance(String(line));
+      u.rate = rate;
+      u.onboundary = ()=>{ if(myToken !== sessionToken) cancelAll(); };
+      speechSynthesis.speak(u);
+    }
+    if(repeatBtn) repeatBtn.disabled = false;
+  }
+
+  function speakOnce(text){
+    if(!hasTTS) return;
+    const myToken = ++sessionToken;
+    lastLines = [String(text)];
+    const u = new SpeechSynthesisUtterance(String(text));
+    u.rate = rate;
+    u.onboundary = ()=>{ if(myToken !== sessionToken) cancelAll(); };
+    speechSynthesis.speak(u);
+    if(repeatBtn) repeatBtn.disabled = false;
+  }
+
+  function summarizePremises(containerSelector){
+    const nodes = Array.from(document.querySelectorAll(containerSelector))
+      .map(el => (el.textContent || '').replace(/[^\p{L}\p{N}\s]/gu,' ').replace(/\s+/g,' ').trim())
+      .filter(Boolean);
+    return nodes.map((t,i)=>`Item ${i+1}: ${t}.`);
+  }
+
+  function bindUI(){
+    rateSlider = document.getElementById('speechRate');
+    rateNum    = document.getElementById('speechRateNum');
+    rateVal    = document.getElementById('speechRateVal');
+    previewBtn = document.getElementById('previewBtn');
+    repeatBtn  = document.getElementById('repeatBtn');
+    infoEl     = document.getElementById('voiceInfo');
+
+    if(previewBtn && previewBtn.dataset.voiceBound === '1'){
+      setRate(rate);
+      updateInfo();
+      return;
+    }
+
+    setRate(rate);
+    if(!hasTTS){
+      if(previewBtn) previewBtn.disabled = true;
+      if(repeatBtn)  repeatBtn.disabled = true;
+      updateInfo();
+      return;
+    }
+
+    if(typeof speechSynthesis !== 'undefined'){
+      speechSynthesis.onvoiceschanged = updateInfo;
+    }
+
+    if(rateSlider) rateSlider.addEventListener('input', e=> setRate(e.target.value));
+    if(rateNum)    rateNum.addEventListener('input',  e=> setRate(e.target.value));
+    if(previewBtn) previewBtn.addEventListener('click', ()=> speakOnce('Imagi World voice preview. Rate ' + rate.toFixed(2)));
+    if(repeatBtn)  repeatBtn.addEventListener('click', ()=> { if(lastLines.length) speakLines(lastLines); });
+    if(previewBtn) previewBtn.dataset.voiceBound = '1';
+    if(repeatBtn)  repeatBtn.dataset.voiceBound = '1';
+  }
+
+  // public API for the app
+  window.ImagiVoice = {
+    init: bindUI,
+    cancel: cancelAll,
+    speakPremiseList: (selector)=>{ const lines = summarizePremises(selector); if(lines.length) speakLines(lines); },
+    speakOnce
+  };
+
+  // init on DOM ready
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindUI);
+  else bindUI();
+})();
+</script>
 
 <script>
 // ========================
@@ -947,6 +1083,8 @@ const app = {
   
   // Start session
   start() {
+    if (window.ImagiVoice && typeof ImagiVoice.init === 'function') { ImagiVoice.init(); }
+    if (window.ImagiVoice && typeof ImagiVoice.cancel === 'function') { ImagiVoice.cancel(); }
     // Initialize seed
     const seedInput = document.getElementById('seed').value;
     this.state.seed = seedInput ? parseInt(seedInput) : Date.now();
@@ -999,7 +1137,8 @@ const app = {
   stop() {
     this.state.running = false;
     clearTimeout(this.state.timer);
-    
+    if (window.ImagiVoice && typeof ImagiVoice.cancel === 'function') { ImagiVoice.cancel(); }
+
     document.getElementById('startBtn').disabled = false;
     document.getElementById('stopBtn').disabled = true;
     document.getElementById('matchBtn').disabled = true;
@@ -1064,7 +1203,11 @@ const app = {
       `;
       display.appendChild(item);
     });
-    
+
+    if (window.ImagiVoice && typeof ImagiVoice.speakPremiseList === 'function') {
+      ImagiVoice.speakPremiseList('#premiseDisplay .premise-text, #premiseDisplay');
+    }
+
     // Update status
     const families = premises.map(p => `F${p.familyId}`).join(',');
     document.getElementById('trialInfo').textContent = 
